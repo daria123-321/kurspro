@@ -73,6 +73,7 @@
   <div style="display:flex;align-items:baseline;gap:12px;">
     <h1>Заявки на курсовые</h1>
     <span class="count" id="countLabel"></span>
+    <span id="roleLabel" style="font-size:13px;color:var(--muted);"></span>
   </div>
   <button class="logout" id="logoutBtn">Выйти</button>
 </div>
@@ -80,9 +81,10 @@
 <!-- Логин -->
 <div class="login-wrap" id="loginBox">
   <h2>Вход в админку</h2>
-  <p>Пароль задан в файле <code>.env</code></p>
+  <p>Введите логин и пароль</p>
   <div class="login-err" id="loginErr"></div>
-  <input type="password" id="passInput" placeholder="Пароль" onkeydown="if(event.key==='Enter')doLogin()">
+  <input type="text" id="loginInput" placeholder="Логин" autocomplete="username">
+  <input type="password" id="passInput" placeholder="Пароль" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()">
   <button onclick="doLogin()">Войти</button>
 </div>
 
@@ -102,29 +104,35 @@
   const TOKEN_KEY = 'kursach_admin_token';
   let all = [];
   let filter = 'all';
+  let currentRole = 'admin';
 
   const STATUS = { new:['Новая','st-new'], inprogress:['В работе','st-inprogress'], done:['Готова','st-done'], rejected:['Отклонена','st-rejected'] };
   const ORDER = ['all','new','inprogress','done','rejected'];
 
-  function getToken(){ return localStorage.getItem(TOKEN_KEY); }
+  function getCreds(){ try { return JSON.parse(localStorage.getItem(TOKEN_KEY) || 'null'); } catch (e) { return null; } }
+  function setCreds(login, pass){ localStorage.setItem(TOKEN_KEY, JSON.stringify({ login, pass })); }
+  function clearCreds(){ localStorage.removeItem(TOKEN_KEY); }
 
   async function api(path, opts={}){
     const headers = Object.assign({}, opts.headers || {});
-    if(getToken()) headers['x-admin-token'] = getToken();
+    const creds = getCreds();
+    if(creds && creds.login) headers['Authorization'] = 'Basic ' + btoa(creds.login + ':' + creds.pass);
     if(opts.body) headers['Content-Type'] = 'application/json';
     const res = await fetch(path, { method: opts.method || 'GET', headers, body: opts.body });
-    if(res.status === 401){ localStorage.removeItem(TOKEN_KEY); location.reload(); }
+    if(res.status === 401){ clearCreds(); location.reload(); }
     return res;
   }
 
   async function doLogin(){
     const err = document.getElementById('loginErr');
-    const val = document.getElementById('passInput').value.trim();
-    if(!val){ err.textContent='Введите пароль'; err.style.display='block'; return; }
-    localStorage.setItem(TOKEN_KEY, val);
+    const login = document.getElementById('loginInput').value.trim();
+    const pass = document.getElementById('passInput').value.trim();
+    if(!login || !pass){ err.textContent='Введите логин и пароль'; err.style.display='block'; return; }
+    setCreds(login, pass);
     err.style.display='none';
     const r = await api('/api/requests');
-    if(r.status===401){ err.textContent='Неверный пароль'; err.style.display='block'; localStorage.removeItem(TOKEN_KEY); return; }
+    if(r.status===401){ err.textContent='Неверный логин или пароль'; err.style.display='block'; clearCreds(); return; }
+    if(r.status===403){ err.textContent='Недостаточно прав'; err.style.display='block'; clearCreds(); return; }
     showDashboard();
   }
 
@@ -172,10 +180,10 @@
         </div>
         <div class="topic">${esc(rq.topic)}</div>
         ${rq.fileName ? `<div class="filelink">📎 <a href="/api/files/${encodeURIComponent(rq.fileName)}" target="_blank" rel="noopener">${esc(rq.fileOriginal || 'Скачать файл')}</a></div>` : ''}
-        <div class="actions">
+        ${currentRole === 'admin' ? `<div class="actions">
           ${ORDER.filter(s=>s!=='all').map(s=>`<button class="status-btn" onclick="setStatus('${rq.id}','${s}')">${STATUS[s][0]}</button>`).join('')}
           <button class="delete" onclick="del('${rq.id}')">Удалить</button>
-        </div>
+        </div>` : ''}
       </div>`;
     }).join('');
   }
@@ -206,21 +214,27 @@
     if(r.ok) load();
   }
 
-  function showDashboard(){
+  async function showDashboard(){
+    const me = await api('/api/me');
+    if(!me.ok) return;
+    const m = await me.json();
+    currentRole = m.role || 'admin';
     document.getElementById('loginBox').classList.add('hidden');
     document.getElementById('topbar').classList.remove('hidden');
     document.getElementById('dashboard').classList.remove('hidden');
+    const hint = document.getElementById('roleLabel');
+    if(hint) hint.textContent = (currentRole === 'admin' ? 'Администратор' : 'Просмотр') + ' · ' + m.login;
     load();
   }
 
-  document.getElementById('logoutBtn').onclick = ()=>{ localStorage.removeItem(TOKEN_KEY); location.reload(); };
+  document.getElementById('logoutBtn').onclick = ()=>{ clearCreds(); location.reload(); };
   document.getElementById('filters').addEventListener('click', e=>{
     if(e.target.tagName==='BUTTON'){ filter=e.target.dataset.f; render(); }
   });
 
-  // Проверка токена при загрузке
+  // Проверка при загрузке
   (async function init(){
-    if(!getToken()) return;
+    if(!getCreds()) return;
     const r = await api('/api/requests');
     if(r.ok) showDashboard();
   })();

@@ -82,9 +82,54 @@ async function sendClientNotice(record) {
   return sendEmail('Заявка получена — мы свяжемся с вами', html, record.email);
 }
 
+// Список пользователей админки из переменной ADMIN_USERS.
+// Формат: "логин:пароль:роль;логин2:пароль2:роль" где роль = "admin" (полный) или "view" (только просмотр).
+// Если ADMIN_USERS не задан — используется ADMIN_PASSWORD (старый режим, роль admin).
+function getUsers() {
+  const raw = process.env.ADMIN_USERS;
+  const out = [];
+  if (raw && raw.trim()) {
+    for (const part of raw.split(';')) {
+      const [login, pass, role] = part.split(':');
+      if (login && pass) out.push({ login: login.trim(), pass, role: (role || 'view').trim() || 'view' });
+    }
+  }
+  if (!out.length && process.env.ADMIN_PASSWORD) {
+    out.push({ login: 'admin', pass: process.env.ADMIN_PASSWORD, role: 'admin' });
+  }
+  return out;
+}
+
+function findUser(login, pass) {
+  return getUsers().find((u) => u.login === login && u.pass === pass) || null;
+}
+
+// Авторизация с логином и паролем.
 function requiresAuth(req, res, next) {
+  const auth = req.headers['authorization'] || '';
   const token = req.headers['x-admin-token'];
-  if (token === process.env.ADMIN_PASSWORD) return next();
+  // Если есть Basic-авторизация — разбираем логин:пароль.
+  if (auth.startsWith('Basic ')) {
+    try {
+      const buf = Buffer.from(auth.slice(6), 'base64').toString('utf8');
+      const i = buf.indexOf(':');
+      const login = buf.slice(0, i);
+      const pass = buf.slice(i + 1);
+      const user = findUser(login, pass);
+      if (user) {
+        req.adminUser = user;
+        return next();
+      }
+      return res.status(401).json({ error: 'Неверный логин или пароль' });
+    } catch (e) {
+      return res.status(401).json({ error: 'Неверный формат авторизации' });
+    }
+  }
+  // Для обратной совместимости поддерживаем x-admin-token (старый режим).
+  if (token && getUsers().some((u) => u.pass === token)) {
+    req.adminUser = getUsers().find((u) => u.pass === token);
+    return next();
+  }
   return res.status(401).json({ error: 'Неверный пароль' });
 }
 
@@ -235,8 +280,14 @@ app.get('/api/requests', requiresAuth, async (req, res) => {
   res.json(await store.getAll());
 });
 
+// Текущий пользователь (логин и роль)
+app.get('/api/me', requiresAuth, (req, res) => {
+  res.json({ login: req.adminUser.login, role: req.adminUser.role });
+});
+
 // Обновление статусов нескольких заявок: [{"id":"...","status":"new"}, ...]
 app.put('/api/requests', requiresAuth, async (req, res) => {
+  if (req.adminUser && req.adminUser.role !== 'admin') return res.status(403).json({ error: 'Недостаточно прав' });
   const updates = Array.isArray(req.body) ? req.body : [];
   const all = await store.getAll();
   const valid = ['new', 'inprogress', 'done', 'rejected'];
@@ -247,6 +298,7 @@ app.put('/api/requests', requiresAuth, async (req, res) => {
 
 // Удаление заявок по id: ["id1","id2"]
 app.delete('/api/requests', requiresAuth, async (req, res) => {
+  if (req.adminUser && req.adminUser.role !== 'admin') return res.status(403).json({ error: 'Недостаточно прав' });
   const ids = Array.isArray(req.body) ? req.body : [];
   const removed = await store.remove(ids);
   res.json({ ok: true, removed });
