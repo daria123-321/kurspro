@@ -53,7 +53,8 @@ async function initPg() {
         deadline TEXT DEFAULT '',
         file_name TEXT DEFAULT '',
         file_original TEXT DEFAULT '',
-        status TEXT DEFAULT 'new'
+        status TEXT DEFAULT 'new',
+        checklist JSONB DEFAULT '[]'::jsonb
       )
     `);
     dbReady = true;
@@ -70,10 +71,15 @@ function toPgRow(r) {
     r.id, r.createdAt, r.name, r.phone, r.email,
     r.workType || '', r.subject, r.course || '', r.volume || '', r.topic,
     r.deadline || '', r.fileName || '', r.fileOriginal || '', r.status || 'new',
+    JSON.stringify(r.checklist || []),
   ];
 }
 
 function fromPgRow(row) {
+  let chk = [];
+  try {
+    chk = row.checklist ? (typeof row.checklist === 'string' ? JSON.parse(row.checklist) : row.checklist) : [];
+  } catch (e) { chk = []; }
   return {
     id: row.id,
     createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
@@ -89,6 +95,7 @@ function fromPgRow(row) {
     fileName: row.file_name || '',
     fileOriginal: row.file_original || '',
     status: row.status || 'new',
+    checklist: chk,
   };
 }
 
@@ -98,8 +105,8 @@ async function pgAll() {
 }
 async function pgAdd(r) {
   await pool.query(
-    `INSERT INTO requests (id, created_at, name, phone, email, work_type, subject, course, volume, topic, deadline, file_name, file_original, status)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+    `INSERT INTO requests (id, created_at, name, phone, email, work_type, subject, course, volume, topic, deadline, file_name, file_original, status, checklist)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
     toPgRow(r)
   );
 }
@@ -107,6 +114,9 @@ async function pgSetStatuses(updates) {
   for (const u of updates) {
     await pool.query('UPDATE requests SET status=$2 WHERE id=$1', [u.id, u.status]);
   }
+}
+async function pgSetChecklist(id, checklist) {
+  await pool.query('UPDATE requests SET checklist=$2 WHERE id=$1', [id, JSON.stringify(checklist)]);
 }
 async function pgRemove(ids) {
   if (!ids.length) return 0;
@@ -160,6 +170,18 @@ const store = {
     const next = all.filter((r) => !ids.includes(r.id));
     writeFile(next);
     return all.length - next.length;
+  },
+  async setChecklist(id, checklist) {
+    if (usePg()) {
+      await pgSetChecklist(id, checklist);
+    } else {
+      const all = readFile();
+      const rec = all.find((r) => r.id === id);
+      if (rec) {
+        rec.checklist = checklist;
+        writeFile(all);
+      }
+    }
   },
 };
 

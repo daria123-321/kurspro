@@ -49,6 +49,11 @@
   .filelink { font-size:14px; margin-bottom:12px; }
   .filelink a { color:var(--brand); text-decoration:none; font-weight:600; }
   .filelink a:hover { text-decoration:underline; }
+  .checklist { border:1px solid var(--line); border-radius:10px; padding:12px 14px; margin-bottom:14px; background:var(--bg); }
+  .cl-head { font-weight:600; font-size:14px; margin-bottom:10px; }
+  .cl-item { display:flex; align-items:center; gap:9px; padding:5px 0; cursor:pointer; font-size:14px; }
+  .cl-item input { width:17px; height:17px; cursor:pointer; accent-color:var(--brand); flex:0 0 auto; }
+  .cl-done { text-decoration:line-through; color:var(--muted); }
   .actions { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
   .chip { padding:6px 12px; border-radius:100px; font-size:12.5px; font-weight:600; }
   .st-new { background:var(--brand-soft); color:var(--brand); }
@@ -148,6 +153,7 @@
     document.getElementById('countLabel').textContent = '· ' + count.all + ' всего';
 
     document.querySelectorAll('#filters button').forEach(b=>{
+      if(!b.dataset.f) return; // пропускаем кнопку экспорта и кнопки без фильтра
       b.classList.toggle('active', b.dataset.f===filter);
       const n = count[b.dataset.f] || 0;
       b.textContent = ({all:'Все',new:'Новые',inprogress:'В работе',done:'Готовые',rejected:'Отклонённые'})[b.dataset.f] + ` (${n})`;
@@ -179,7 +185,8 @@
           <span class="chip ${sc}">${sn}</span>
         </div>
         <div class="topic">${esc(rq.topic)}</div>
-        ${rq.fileName ? `<div class="filelink">📎 <a href="/api/files/${encodeURIComponent(rq.fileName)}" target="_blank" rel="noopener">${esc(rq.fileOriginal || 'Скачать файл')}</a></div>` : ''}
+        ${rq.fileName ? `<div class="filelink">📎 <a href="/api/files/${encodeURIComponent(rq.fileName)}?orig=${encodeURIComponent(rq.fileOriginal || '')}" target="_blank" rel="noopener">${esc(rq.fileOriginal || 'Скачать файл')}</a></div>` : ''}
+        ${currentRole === 'admin' ? renderChecklist(rq) : ''}
         ${currentRole === 'admin' ? `<div class="actions">
           ${ORDER.filter(s=>s!=='all').map(s=>`<button class="status-btn" onclick="setStatus('${rq.id}','${s}')">${STATUS[s][0]}</button>`).join('')}
           <button class="delete" onclick="del('${rq.id}')">Удалить</button>
@@ -189,6 +196,48 @@
   }
 
   function esc(s){ return String(s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+  // Типовой чек-лист по методичке (можно менять)
+  const DEFAULT_CHECKLIST = [
+    'Тема соответствует заданию',
+    'Объём соответствует требованиям',
+    'Введение (цели, задачи) на месте',
+    'Основная часть по структуре',
+    'Заключение с выводами',
+    'Список литературы оформлен',
+    'Оформление по ГОСТ (поля, шрифт, интервалы)',
+    'Уникальность в норме',
+    'Готов к сдаче'
+  ];
+
+  function renderChecklist(rq){
+    const items = Array.isArray(rq.checklist) && rq.checklist.length ? rq.checklist : DEFAULT_CHECKLIST.map(l=>({label:l,done:false}));
+    const doneCount = items.filter(i=>i.done).length;
+    return `<div class="checklist">
+      <div class="cl-head">📋 Чек-лист по методичке <span style="color:var(--muted);font-weight:500;">(${doneCount}/${items.length})</span></div>
+      ${items.map((it,ix)=>`<label class="cl-item" onclick="return false;">
+        <input type="checkbox" ${it.done?'checked':''} onchange="toggleCheck('${rq.id}', ${ix}, this.checked)">
+        <span class="${it.done?'cl-done':''}">${esc(it.label)}</span>
+      </label>`).join('')}
+      <button class="status-btn" style="margin-top:8px;" onclick="resetChecklist('${rq.id}')">Сбросить</button>
+    </div>`;
+  }
+
+  async function toggleCheck(id, idx, checked){
+    const list = all; // находим заявку напрямую
+    const rq = all.find(r=>r.id===id);
+    if(!rq) return;
+    const items = Array.isArray(rq.checklist) && rq.checklist.length ? rq.checklist : DEFAULT_CHECKLIST.map(l=>({label:l,done:false}));
+    if(items[idx]) items[idx].done = checked;
+    const r = await api('/api/requests/'+id+'/checklist', { method:'PATCH', body: JSON.stringify({ checklist: items }) });
+    if(r.ok){ rq.checklist = items; render(); }
+  }
+
+  async function resetChecklist(id){
+    const items = DEFAULT_CHECKLIST.map(l=>({label:l,done:false}));
+    const r = await api('/api/requests/'+id+'/checklist', { method:'PATCH', body: JSON.stringify({ checklist: items }) });
+    if(r.ok){ const rq = all.find(x=>x.id===id); if(rq) rq.checklist=items; render(); }
+  }
 
   async function exportCsv(){
     const r = await api('/api/requests/export');

@@ -143,8 +143,10 @@ const upload = multer({
   storage: multer.diskStorage({
     destination: (req, file, cb) => cb(null, UPLOADS_DIR),
     filename: (req, file, cb) => {
-      const safe = path.basename(file.originalname).replace(/[^\w.\-\u0400-\u04FF ]/g, '_');
-      cb(null, Date.now().toString(36) + '-' + safe);
+      const orig = path.basename(file.originalname || 'file');
+      const ext = path.extname(orig).toLowerCase().slice(0, 10);
+      const base = path.basename(orig, ext).replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 60) || 'file';
+      cb(null, Date.now().toString(36) + '-' + base + ext);
     },
   }),
   limits: { fileSize: 15 * 1024 * 1024 },
@@ -304,6 +306,17 @@ app.delete('/api/requests', requiresAuth, async (req, res) => {
   res.json({ ok: true, removed });
 });
 
+// Сохранение чек-листа заявки: PATCH /api/requests/:id/checklist {checklist:[{label,done}]}
+app.patch('/api/requests/:id/checklist', requiresAuth, async (req, res) => {
+  if (req.adminUser && req.adminUser.role !== 'admin') return res.status(403).json({ error: 'Недостаточно прав' });
+  const { id } = req.params;
+  let chk = req.body && req.body.checklist;
+  if (!Array.isArray(chk)) return res.status(400).json({ error: 'Некорректный чек-лист' });
+  chk = chk.map((c) => ({ label: String(c.label || ''), done: !!c.done }));
+  await store.setChecklist(id, chk);
+  res.json({ ok: true });
+});
+
 // Экспорт в CSV (открывается в Excel). Разделитель ';' + BOM для кириллицы.
 app.get('/api/requests/export', requiresAuth, async (req, res) => {
   const all = await store.getAll();
@@ -334,7 +347,9 @@ app.get('/api/files/:name', requiresAuth, (req, res) => {
   const name = path.basename(req.params.name);
   const fp = path.join(UPLOADS_DIR, name);
   if (!fs.existsSync(fp)) return res.status(404).json({ error: 'Файл не найден' });
-  res.download(fp);
+  const origName = (req.adminUser && req.query.orig) || name;
+  res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(origName)}`);
+  res.sendFile(fp);
 });
 
 // --- Статика и запуск ---
